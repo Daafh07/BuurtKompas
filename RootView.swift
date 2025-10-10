@@ -3,16 +3,13 @@
 //
 //  Bronvermelding (APA 7):
 //  Apple Inc. (2025). *SwiftUI State Management* [Developer documentation].
-//      Apple Developer. https://developer.apple.com/documentation/swiftui
 //  Google. (2025). *Firebase Authentication State Changes (iOS)* [Developer documentation].
-//      Firebase. https://firebase.google.com/docs/auth
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI. https://chat.openai.com/
-//  --
-//  Geschreven door Daaf Heijnekamp (2025) met hulp van ChatGPT.
-//  Verzorgt de routering tussen AuthView en de hoofdapp na succesvolle login.
+//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI.
+//
 
 import SwiftUI
 import FirebaseAuth
+import Combine
 
 struct RootView: View {
     @State private var isLoggedIn: Bool = (Auth.auth().currentUser != nil)
@@ -24,22 +21,18 @@ struct RootView: View {
         Group {
             if !isLoggedIn {
                 AuthView()
-                    .onReceive(Auth.auth().authStateDidChangePublisher()) { user in
-                        isLoggedIn = (user != nil)
-                        if let user { Task { await ensureUserProfile(for: user) } }
-                    }
             } else {
-                LoggedInHome(
-                    profile: profile,
-                    onSignOut: {
-                        do { try Auth.auth().signOut() } catch { print(error) }
-                        isLoggedIn = false
-                        profile = nil
-                    },
-                    loading: loading,
-                    error: error
-                )
+                MainTabView()
             }
+        }
+        // 🔊 Luister ALTIJD naar auth-state (ook wanneer MainTabView zichtbaar is)
+        .onReceive(Auth.auth().authStateDidChangePublisher()) { user in
+            let logged = (user != nil)
+            if logged && isLoggedIn == false, let u = user {
+                Task { await ensureUserProfile(for: u) }
+            }
+            isLoggedIn = logged
+            if !logged { profile = nil }
         }
     }
 
@@ -56,49 +49,7 @@ struct RootView: View {
     }
 }
 
-// Klein, stijlvol “ingelogd” scherm in jouw thema
-struct LoggedInHome: View {
-    let profile: UserProfile?
-    let onSignOut: () -> Void
-    let loading: Bool
-    let error: String?
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("BuurtKompas").appTitle()
-
-            GlassCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    if loading {
-                        ProgressView("Profiel laden…")
-                    } else {
-                        Text("Ingelogd ✅").font(.headline)
-                        if let p = profile {
-                            Text("E-mail: \(p.email)")
-                            Text("Rol: \(p.role)")
-                            Text("Punten: \(p.points)")
-                                .foregroundStyle(AppColors.primaryBlue)
-                        } else {
-                            Text("Profiel niet gevonden").foregroundStyle(.secondary)
-                        }
-                    }
-                    if let error = error {
-                        Text(error).foregroundStyle(.red).font(.footnote)
-                    }
-                }
-            }
-
-            Button("Uitloggen", action: onSignOut)
-                .buttonStyle(AppButtonStyle())
-
-            Spacer(minLength: 0)
-        }
-        .appScaffold()
-    }
-}
-
-// Publisher helper (zoals eerder)
-import Combine
+// Publisher helper
 extension Auth {
     func authStateDidChangePublisher() -> AnyPublisher<User?, Never> {
         let subject = PassthroughSubject<User?, Never>()
