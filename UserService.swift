@@ -1,54 +1,33 @@
 //
 //  UserService.swift
 //
-//  Bronvermelding (APA 7):
-//  Google. (2025). *Cloud Firestore for iOS – Asynchronous Calls* [Developer documentation].
-//      Firebase. https://firebase.google.com/docs/firestore
-//  Apple Inc. (2025). *Swift Concurrency Guide* [Developer documentation].
-//      Apple Developer. https://developer.apple.com/documentation/swift/concurrency
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI. https://chat.openai.com/
-//  --
-//  Code ontwikkeld door Daaf Heijnekamp (2025) voor de BuurtKompas-app,
-//  gebaseerd op Firebase Firestore documentatie en Swift concurrency voorbeelden.
+//  Service voor user-profielen (Swift 6 friendly).
 //
 
 import Foundation
 import FirebaseFirestore
 
-/// Swift 6-vriendelijk: geen 'actor', maar een gewone class.
-/// We halen Firestore altijd via de MainActor op (zie db()).
 final class UserService {
     static let shared = UserService()
     private init() {}
 
-    // MARK: - Firestore helper (MainActor)
-    private func db() async -> Firestore {
-        await MainActor.run { FirebaseFirestore.Firestore.firestore() }
+    // MARK: Firestore helper (MainActor om isolation-warnings te voorkomen)
+    fileprivate func db() async -> Firestore {
+        await MainActor.run { Firestore.firestore() }
     }
 
-    // MARK: - Load (met zelfherstel van ontbrekende velden)
-    /// Laadt het userprofiel. Als `points` ontbreekt, wordt dit veld automatisch gezet op 0.
+    // MARK: Load met zelfherstel van ontbrekende velden
     func load(uid: String) async throws -> UserProfile? {
         let db = await db()
         let ref = db.collection("users").document(uid)
         let snap = try await ref.getDocument()
         guard var data = snap.data() else { return nil }
 
-        // Zelfherstel: points moet bestaan en een Int zijn
         var needsPatch = false
-        if data["points"] as? Int == nil {
-            data["points"] = 0
-            needsPatch = true
-        }
-
-        // Optionele velden consistent houden (kan handig zijn voor UI)
-        if data["role"] as? String == nil {
-            data["role"] = "citizen"
-            needsPatch = true
-        }
+        if data["points"] as? Int == nil { data["points"] = 0; needsPatch = true }
+        if data["role"] as? String == nil { data["role"] = "citizen"; needsPatch = true }
 
         if needsPatch {
-            // Patch het document non-blocking (UI hoeft hier niet op te wachten)
             Task.detached {
                 do {
                     try await ref.updateData([
@@ -57,7 +36,7 @@ final class UserService {
                         "updatedAt": FieldValue.serverTimestamp()
                     ])
                 } catch {
-                    print("⚠️ [UserService] Kon ontbrekende velden niet patchen: \(error.localizedDescription)")
+                    print("⚠️ [UserService] Patch ontbrekende velden faalde: \(error.localizedDescription)")
                 }
             }
         }
@@ -65,8 +44,7 @@ final class UserService {
         return UserProfile.from(uid: uid, data: data)
     }
 
-    // MARK: - Create if needed
-    /// Maakt een userdocument aan als het nog niet bestaat, met `points: 0`.
+    // MARK: Create if needed
     func createIfNeeded(uid: String, email: String) async throws -> UserProfile {
         if let existing = try await load(uid: uid) { return existing }
 
@@ -76,33 +54,48 @@ final class UserService {
         let fields: [String: Any] = [
             "uid": uid,
             "email": email,
-            "displayName": NSNull(),     // optioneel veld
+            "displayName": NSNull(),
             "role": "citizen",
-            "municipalityId": NSNull(),  // optioneel veld
-            "points": 0,                 // ✅ startwaarde punten
+            "municipalityId": NSNull(),
+            "points": 0,
             "createdAt": FieldValue.serverTimestamp(),
             "updatedAt": FieldValue.serverTimestamp()
         ]
-
         try await ref.setData(fields, merge: true)
 
-        // Lokale representatie (server timestamps komen pas bij volgende read binnen)
-        return UserProfile(
-            uid: uid,
-            email: email,
-            displayName: nil,
-            role: "citizen",
-            municipalityId: nil,
-            points: 0,
-            createdAt: Date(),
-            updatedAt: Date()
-        )
+        return UserProfile.default(uid: uid, email: email)
     }
 
-    // MARK: - Touch updatedAt (handig bij profielwijzigingen)
+    // Handig bij profielupdates
     func touchUpdatedAt(uid: String) async throws {
         let db = await db()
         try await db.collection("users").document(uid)
             .updateData(["updatedAt": FieldValue.serverTimestamp()])
     }
+}
+
+// MARK: - Municipality updates
+extension UserService {
+    /// Slaat de gekozen gemeente (of geen) op in users/{uid}.municipalityId
+    /// - Parameter municipalityId: gebruik `nil` of "" om te verwijderen.
+    func updateMunicipality(uid: String, municipalityId: String?) async throws {
+        let db = await db()
+        var payload: [String: Any] = [
+            "updatedAt": FieldValue.serverTimestamp()
+        ]
+        if let muni = municipalityId, !muni.isEmpty {
+            payload["municipalityId"] = muni
+        } else {
+            payload["municipalityId"] = FieldValue.delete()
+        }
+        try await db.collection("users").document(uid).updateData(payload)
+
+        // Laat de app weten dat de gemeente is aangepast (voor live refresh van listeners)
+        NotificationCenter.default.post(name: .userMunicipalityDidChange, object: nil)
+    }
+}
+
+// MARK: - Notification helper
+extension Notification.Name {
+    static let userMunicipalityDidChange = Notification.Name("UserMunicipalityDidChange")
 }

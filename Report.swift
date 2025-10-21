@@ -1,11 +1,6 @@
 //
 //  Report.swift
 //
-//  Bronvermelding (APA 7):
-//  Google. (2025). *Cloud Firestore data model documentation* [Developer documentation]. Firebase.
-//  Apple Inc. (2025). *Core Location* [Developer documentation]. Apple Developer.
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI.
-//
 
 import Foundation
 import FirebaseFirestore
@@ -26,6 +21,7 @@ struct Report: Identifiable {
     let createdAt: Date?
     let updatedAt: Date?
     let coordinate: CLLocationCoordinate2D?
+    let municipalityId: String?   // ✅ NIEUW
 }
 
 extension Report {
@@ -46,7 +42,8 @@ extension Report {
             photoUrl: data["photoUrl"] as? String,
             createdAt: (data["createdAt"] as? Timestamp)?.dateValue(),
             updatedAt: (data["updatedAt"] as? Timestamp)?.dateValue(),
-            coordinate: coord
+            coordinate: coord,
+            municipalityId: data["municipalityId"] as? String // ✅ mapping
         )
     }
 }

@@ -9,8 +9,10 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Laatste nieuws uit jouw gemeente:")
                         .font(.headline)
-                    Text("• Nieuwe groenvoorziening gepland in wijk Zuid.")
-                    Text("• Afvalinzameling verplaatst naar dinsdag.")
+                    Text("• Nieuwe speeltuin aangelegd in de Vlindervalei.")
+                    Text("• Gemeentestraat verplaatst naar een nieuwe locatie, Ijzerstraat 6.")
+                    Text("• Gemeente Oosterhout benoemd tot 'Het beste opkomende stadje van Nederland'.")
+                    Text("• Zwemmen bij de warande nu gratis mogelijk voor iedereen onder de 12 jaar!")
                 }
             }
 

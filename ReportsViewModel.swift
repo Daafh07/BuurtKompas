@@ -1,17 +1,9 @@
 //
 //  ReportsViewModel.swift
 //
-//  Bronvermelding (APA 7):
-//  Apple Inc. (2025). *SwiftUI State Management* [Developer documentation].
-//      Apple Developer. https://developer.apple.com/documentation/swiftui
-//  Google. (2025). *Cloud Firestore – Listen for realtime updates* [Developer documentation].
-//      Firebase. https://firebase.google.com/docs/firestore/query-data/listen
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI. https://chat.openai.com/
-//  --
-//  Houdt de lijst met eigen meldingen bij (realtime + pull-to-refresh).
 
 import Foundation
-import Combine   // <-- noodzakelijk voor ObservableObject/@Published
+import Combine
 
 @MainActor
 final class ReportsViewModel: ObservableObject {

@@ -1,21 +1,11 @@
 //
 //  NewReportView.swift
 //
-//  Bronvermelding (APA 7):
-//  Apple Inc. (2025). *PHPickerViewController* [Developer documentation]. Apple Developer.
-//  Apple Inc. (2025). *SwiftUI forms & pickers* [Developer documentation]. Apple Developer.
-//  Apple Inc. (2025). *MapKit (MKMapView & gestures)* [Developer documentation]. Apple Developer.
-//  Google. (2025). *Cloud Firestore & Storage* [Developer documentation]. Firebase.
-//  Apple Inc. (2025). *UITextView & UIResponder* [Developer documentation]. Apple Developer.
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI.
-//
-//  Formulier om een melding te maken met optionele foto-upload en centrale live-locatie.
-//  Inclusief: custom meerregelige editor met Enter/Done-toets om het toetsenbord te sluiten + glassy stijl.
-//
 
 import SwiftUI
 import PhotosUI
 import MapKit
+import FirebaseAuth
 
 struct NewReportView: View {
     @Environment(\.dismiss) private var dismiss
@@ -28,123 +18,218 @@ struct NewReportView: View {
     @State private var error: String?
     @State private var success = false
 
-    // Focusbeheer voor velden
+    // Gemeente-UI
+    @State private var selectedMunicipalityId: String = ""   // ← verplicht voor dit report
+    @State private var profileLoaded = false
+
+    // Focusbeheer
     enum Field: Hashable { case title, description }
     @FocusState private var focusedField: Field?
 
+    // Hoogte van de (auto-groeiende) omschrijving
+    @State private var descriptionHeight: CGFloat = 120
+
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Nieuwe melding").appTitle()
+        ZStack {
+            AppBackground()
 
-            GlassCard {
-                VStack(spacing: 12) {
-                    // Titel
-                    TextField("Titel", text: $draft.title)
-                        .appTextField()
-                        .focused($focusedField, equals: .title)
-                        .submitLabel(.done)
-                        .onSubmit { focusedField = nil }
+            // ===== Scrollbare content =====
+            ScrollView(.vertical) {
+                VStack(spacing: 16) {
+                    Text("Nieuwe melding").appTitle()
 
-                    // Omschrijving (meerregelig) — GLASSY + sluit bij Enter/Done
-                    GlassTextArea(
-                        text: $draft.description,
-                        placeholder: "Omschrijving",
-                        focusedField: $focusedField,
-                        current: .description
-                    )
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 14) {
 
-                    // Categorie (centraal via ReportCategory)
-                    HStack {
-                        Label("Categorie", systemImage: ReportCategory.from(draft.category).symbolName)
-                            .font(.subheadline)
-                        Spacer()
-                        Menu {
-                            ForEach(ReportCategory.allCases, id: \.self) { cat in
-                                Button {
-                                    draft.category = cat.rawValue
-                                } label: {
-                                    Label(cat.label, systemImage: cat.symbolName)
+                            // MARK: Titel
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "textformat.size")
+                                        .foregroundStyle(.secondary)
+                                    Text("Titel")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                TextField("Bijv. kapotte straatlamp", text: $draft.title)
+                                    .appTextField()
+                                    .focused($focusedField, equals: .title)
+                                    .submitLabel(.done)
+                                    .onSubmit { focusedField = nil }
+                            }
+
+                            // MARK: Omschrijving (auto-groeiend)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "text.alignleft")
+                                        .foregroundStyle(.secondary)
+                                    Text("Omschrijving")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                GlassTextArea(
+                                    text: $draft.description,
+                                    placeholder: "Geef meer details…",
+                                    focusedField: $focusedField,
+                                    current: .description,
+                                    dynamicHeight: $descriptionHeight
+                                )
+                                .frame(minHeight: descriptionHeight, maxHeight: 220) // ruim & begrensd
+                            }
+
+                            // MARK: Categorie
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "tag")
+                                        .foregroundStyle(.secondary)
+                                    Text("Categorie")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                HStack {
+                                    Spacer(minLength: 0)
+                                    Menu {
+                                        ForEach(ReportCategory.allCases, id: \.self) { cat in
+                                            Button {
+                                                draft.category = cat.rawValue
+                                            } label: {
+                                                Label(cat.label, systemImage: cat.symbolName)
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: ReportCategory.from(draft.category).symbolName)
+                                            Text(ReportCategory.from(draft.category).label)
+                                        }
+                                        .font(.callout.weight(.semibold))
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(ReportCategory.from(draft.category).color.opacity(0.18))
+                                        .foregroundStyle(AppColors.darkText)
+                                        .cornerRadius(10)
+                                    }
                                 }
                             }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: ReportCategory.from(draft.category).symbolName)
-                                Text(ReportCategory.from(draft.category).label)
+
+                            // MARK: Gemeente (verplicht)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "building.2")
+                                        .foregroundStyle(.secondary)
+                                    Text("Gemeente van deze melding")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+
+                                Picker("Gemeente", selection: $selectedMunicipalityId) {
+                                    Text("— Kies een gemeente —").tag("")
+                                    ForEach(MunicipalitiesNB.all, id: \.id) { m in
+                                        Text(m.name).tag(m.id)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+
+                                if !selectedMunicipalityId.isEmpty,
+                                   let lab = MunicipalitiesNB.label(for: selectedMunicipalityId) {
+                                    Text("Geselecteerd: \(lab)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(ReportCategory.from(draft.category).color.opacity(0.18))
-                            .foregroundStyle(AppColors.darkText)
-                            .cornerRadius(12)
-                        }
-                    }
 
-                    // Anoniem toggle
-                    Toggle("Anoniem plaatsen", isOn: $draft.isAnonymous)
+                            // MARK: Anoniem
+                            Toggle("Anoniem plaatsen", isOn: $draft.isAnonymous)
 
-                    // 📍 CENTRAAL: Live-locatiekaart met verplaatsbare pin
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Locatie").font(.subheadline)
-                        LiveLocationPicker(
-                            latitude: $draft.latitude,
-                            longitude: $draft.longitude
-                        )
-                        .frame(height: 260)
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.3), lineWidth: 0.5))
-
-                        Text("Tip: sleep de pin om de exacte plek te kiezen.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // 📸 Foto upload
-                    VStack(alignment: .leading, spacing: 8) {
-                        if let img = selectedImage {
-                            Image(uiImage: img)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 160)
-                                .clipped()
+                            // MARK: Locatie
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "mappin.and.ellipse")
+                                        .foregroundStyle(.secondary)
+                                    Text("Locatie")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                LiveLocationPicker(
+                                    latitude: $draft.latitude,
+                                    longitude: $draft.longitude
+                                )
+                                .frame(height: 260)
                                 .cornerRadius(14)
-                        }
+                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.3), lineWidth: 0.5))
 
-                        PhotosPicker(selection: $selectedItem, matching: .images, photoLibrary: .shared()) {
-                            Label(selectedImage == nil ? "Kies foto (optioneel)" : "Andere foto kiezen",
-                                  systemImage: "photo")
-                        }
-                        .onChange(of: selectedItem) { _, newValue in
-                            Task { await loadImage(from: newValue) }
+                                Text("Tip: sleep de pin om de exacte plek te kiezen.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            // MARK: Foto
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "photo")
+                                        .foregroundStyle(.secondary)
+                                    Text("Foto (optioneel)")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+
+                                if let img = selectedImage {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(height: 160)
+                                        .clipped()
+                                        .cornerRadius(14)
+                                }
+
+                                PhotosPicker(selection: $selectedItem, matching: .images, photoLibrary: .shared()) {
+                                    Label(selectedImage == nil ? "Kies foto" : "Andere foto kiezen",
+                                          systemImage: "photo.on.rectangle")
+                                }
+                                .onChange(of: selectedItem) { _, newValue in
+                                    Task { await loadImage(from: newValue) }
+                                }
+                            }
                         }
                     }
+
+                    // Fouten/feedback in de scroll (zodat je ze altijd ziet)
+                    if let error {
+                        Text(error).foregroundColor(.red).font(.footnote)
+                    }
+                    if success {
+                        Text("Melding geplaatst ✅").foregroundColor(AppColors.success)
+                    }
+
+                    // Extra spacing zodat de sticky bar niets overlapt
+                    Color.clear.frame(height: 120)
                 }
+                .padding(.horizontal)
             }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively) // on-drag klapt keyboard in
 
-            if let error {
-                Text(error).foregroundColor(.red).font(.footnote)
-            }
-            if success {
-                Text("Melding geplaatst ✅").foregroundColor(AppColors.success)
-            }
+            // ===== Sticky bottom action bar =====
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Divider().opacity(0.2)
+                    HStack(spacing: 12) {
+                        Button("Annuleren") {
+                            focusedField = nil
+                            dismiss()
+                        }
+                        .buttonStyle(.bordered)
 
-            Button(isSubmitting ? "Bezig…" : "Plaatsen") {
-                focusedField = nil
-                Task { await submit() }
+                        Button(isSubmitting ? "Bezig…" : "Plaatsen") {
+                            focusedField = nil
+                            Task { await submit() }
+                        }
+                        .buttonStyle(AppButtonStyle())
+                        .disabled(isSubmitting
+                                  || draft.title.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || !MunicipalitiesNB.isValid(selectedMunicipalityId))
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                }
+                .background(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: -2)
             }
-            .buttonStyle(AppButtonStyle())
-            .disabled(isSubmitting || draft.title.trimmingCharacters(in: .whitespaces).isEmpty)
-
-            Button("Annuleren") {
-                focusedField = nil
-                dismiss()
-            }
-            .foregroundStyle(AppColors.primaryBlue)
-
-            Spacer(minLength: 0)
         }
-        // Tik-buiten-veld sluit keyboard
+        .task { await preloadMunicipalityFromProfile() }
         .onTapGesture { focusedField = nil }
-        // Keyboard toolbar met "Gereed"
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -152,6 +237,18 @@ struct NewReportView: View {
             }
         }
         .appScaffold()
+    }
+
+    // MARK: - Prefill gemeente uit profiel
+
+    private func preloadMunicipalityFromProfile() async {
+        guard !profileLoaded, let uid = Auth.auth().currentUser?.uid else { return }
+        defer { profileLoaded = true }
+        if let profile = try? await UserService.shared.load(uid: uid),
+           let muni = profile.municipalityId,
+           MunicipalitiesNB.isValid(muni) {
+            selectedMunicipalityId = muni
+        }
     }
 
     // MARK: - Helpers
@@ -170,15 +267,22 @@ struct NewReportView: View {
 
     private func submit() async {
         guard !draft.title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        // Vereis een gekozen locatie
         guard draft.latitude != nil, draft.longitude != nil else {
             error = "Selecteer eerst een locatie op de kaart."
+            return
+        }
+        guard MunicipalitiesNB.isValid(selectedMunicipalityId) else {
+            error = "Kies een geldige gemeente."
             return
         }
 
         error = nil; success = false; isSubmitting = true
         do {
-            try await ReportService.shared.createReport(draft: draft, image: selectedImage)
+            try await ReportService.shared.createReport(
+                draft: draft,
+                image: selectedImage,
+                overrideMunicipalityId: selectedMunicipalityId // expliciet vastleggen
+            )
             success = true
             try? await Task.sleep(nanoseconds: 700_000_000)
             await MainActor.run { dismiss() }
@@ -189,15 +293,14 @@ struct NewReportView: View {
     }
 }
 
-//
-// MARK: - GLASSY TEXT AREA (meerregelig) die het toetsenbord sluit bij Enter/Done
-//
+// MARK: - GLASSY TEXT AREA (auto-groeiend)
 
 private struct GlassTextArea: View {
     @Binding var text: String
     var placeholder: String
     @FocusState<NewReportView.Field?>.Binding var focusedField: NewReportView.Field?
     var current: NewReportView.Field
+    @Binding var dynamicHeight: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -205,7 +308,8 @@ private struct GlassTextArea: View {
                 text: $text,
                 placeholder: placeholder,
                 focusedField: $focusedField,
-                current: current
+                current: current,
+                dynamicHeight: $dynamicHeight
             )
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -214,10 +318,7 @@ private struct GlassTextArea: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
                     .stroke(LinearGradient(
-                        colors: [
-                            .white.opacity(0.35),
-                            .white.opacity(0.12)
-                        ],
+                        colors: [.white.opacity(0.35), .white.opacity(0.12)],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     ), lineWidth: 0.8)
             )
@@ -226,30 +327,29 @@ private struct GlassTextArea: View {
     }
 }
 
-// MARK: - Aangepaste TextEditor (UIKit) met Enter=Done + placeholder die nooit in je binding komt
+// TextEditor op UIKit-basis met placeholder + auto-height
 private struct CustomTextEditor: UIViewRepresentable {
     @Binding var text: String
     var placeholder: String
     @FocusState<NewReportView.Field?>.Binding var focusedField: NewReportView.Field?
     var current: NewReportView.Field
+    @Binding var dynamicHeight: CGFloat
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
         tv.font = UIFont.preferredFont(forTextStyle: .body)
         tv.backgroundColor = .clear
         tv.delegate = context.coordinator
-        tv.isScrollEnabled = true
-        tv.returnKeyType = .done
+        tv.isScrollEnabled = false            // laat hoogte meegroeien
         tv.textContainerInset = UIEdgeInsets(top: 6, left: 2, bottom: 6, right: 2)
-        tv.text = ""                // start leeg
+        tv.text = ""
         tv.textColor = .label
+        DispatchQueue.main.async { self.dynamicHeight = max(120, tv.contentSize.height) }
         return tv
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
-        // Deterministisch gedrag o.b.v. focus + binding
         if focusedField == current {
-            // Actief veld: NOOIT placeholder tonen
             if text.isEmpty {
                 if tv.textColor != .label || tv.text != "" {
                     tv.textColor = .label
@@ -262,7 +362,6 @@ private struct CustomTextEditor: UIViewRepresentable {
                 }
             }
         } else {
-            // Niet actief
             if text.isEmpty {
                 if tv.text != placeholder || tv.textColor != .placeholderText {
                     tv.textColor = .placeholderText
@@ -275,10 +374,15 @@ private struct CustomTextEditor: UIViewRepresentable {
                 }
             }
         }
+
+        // hoogte updaten
+        DispatchQueue.main.async {
+            self.dynamicHeight = max(120, min(220, tv.contentSize.height))
+        }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, placeholder: placeholder, focusedField: $focusedField, current: current)
+        Coordinator(text: $text, placeholder: placeholder, focusedField: $focusedField, current: current, height: $dynamicHeight)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -286,17 +390,20 @@ private struct CustomTextEditor: UIViewRepresentable {
         let placeholder: String
         @FocusState<NewReportView.Field?>.Binding var focusedField: NewReportView.Field?
         let current: NewReportView.Field
+        @Binding var height: CGFloat
 
-        init(text: Binding<String>, placeholder: String, focusedField: FocusState<NewReportView.Field?>.Binding, current: NewReportView.Field) {
+        init(text: Binding<String>, placeholder: String,
+             focusedField: FocusState<NewReportView.Field?>.Binding,
+             current: NewReportView.Field, height: Binding<CGFloat>) {
             _text = text
             self.placeholder = placeholder
             _focusedField = focusedField
             self.current = current
+            _height = height
         }
 
         func textViewDidBeginEditing(_ tv: UITextView) {
             focusedField = current
-            // Als er nog placeholder stond → direct leegmaken
             if tv.textColor == .placeholderText {
                 tv.textColor = .label
                 tv.text = ""
@@ -305,37 +412,30 @@ private struct CustomTextEditor: UIViewRepresentable {
 
         func textViewDidEndEditing(_ tv: UITextView) {
             focusedField = nil
-            // Geen tekst? placeholder tonen (binding blijft leeg)
             if tv.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 tv.textColor = .placeholderText
                 tv.text = placeholder
-                text = "" // binding leeg houden
+                text = ""
             }
         }
 
         func textViewDidChange(_ tv: UITextView) {
-            // Alleen echte tekst (geen placeholder) naar binding schrijven
             if tv.textColor != .placeholderText {
                 text = tv.text
             }
+            height = max(120, min(220, tv.contentSize.height))
         }
 
         func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText newText: String) -> Bool {
-            // Enter/Return → sluit toetsenbord
             if newText == "\n" {
                 tv.resignFirstResponder()
                 focusedField = nil
                 return false
             }
-
-            // 🔧 Belangrijk: als er nog placeholder staat en de user typt een normaal teken,
-            // wis eerst de placeholder en begin met echte tekst.
             if tv.textColor == .placeholderText {
                 tv.textColor = .label
                 tv.text = ""
-                // iOS gaat nu alsnog het nieuwe teken invoegen (range is nog geldig)
             }
-
             return true
         }
     }

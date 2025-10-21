@@ -1,13 +1,6 @@
 //
 //  ReportService.swift
 //
-//  Bronvermelding (APA 7):
-//  Google. (2025). *Cloud Firestore for iOS – Add & update data* [Developer documentation]. Firebase.
-//  Apple Inc. (2025). *Swift Concurrency Guide* [Developer documentation]. Apple Developer.
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI.
-//  --
-//  Centrale service voor meldingen (FireStore + helper utilities).
-//
 
 import Foundation
 import FirebaseFirestore
@@ -18,35 +11,48 @@ final class ReportService {
     static let shared = ReportService()
     private init() {}
 
-    /// Geeft de Firestore instance terug vanaf de MainActor (veilig voor Swift 6).
+    /// Firestore instance vanaf de MainActor (voorkomt Swift 6 isolation errors).
     func db() async -> Firestore {
         await MainActor.run { Firestore.firestore() }
     }
 
+    // MARK: - Create
+
     /// Maakt een nieuw report aan. Uploadt optionele foto, schrijft Firestore document.
-    /// LET OP: `PhotoStorage` moet bestaan met uploadReportImage(_:reportId:).
-    func createReport(draft: ReportDraft, image: UIImage?) async throws {
+    /// - Parameters:
+    ///   - draft: ReportDraft met titel/omschrijving/categorie/locatie/anon.
+    ///   - image: Optionele UIImage.
+    ///   - overrideMunicipalityId: (Optioneel) gemeente-id die dit report MOET krijgen.
+    ///     Als nil, dan pakken we de `municipalityId` van de ingelogde gebruiker (indien aanwezig).
+    func createReport(draft: ReportDraft,
+                      image: UIImage?,
+                      overrideMunicipalityId: String? = nil) async throws
+    {
         guard let user = Auth.auth().currentUser else {
             throw NSError(domain: "ReportService", code: -10,
                           userInfo: [NSLocalizedDescriptionKey: "Geen ingelogde gebruiker"])
         }
 
-        // Genereer ID vooraf zodat Storage-pad en document overeenkomen
         let id = UUID().uuidString
         var photoUrl: String? = nil
 
-        // 1) Foto (optioneel) uploaden
+        // 0) Bepaal municipalityId
+        var municipalityId: String? = overrideMunicipalityId
+        if municipalityId == nil {
+            municipalityId = try await UserService.shared.load(uid: user.uid)?.municipalityId
+        }
+
+        // 1) Optionele foto uploaden
         if let image {
             do {
                 photoUrl = try await PhotoStorage.shared.uploadReportImage(image, reportId: id)
                 print("✅ [ReportService] Foto geüpload: \(photoUrl ?? "-")")
             } catch {
                 print("⚠️ [ReportService] Foto upload faalde: \(error.localizedDescription)")
-                // throw error  // eventueel afbreken i.p.v. doorgaan zonder foto
             }
         }
 
-        // 2) Velden opbouwen
+        // 2) Firestore velden
         var fields: [String: Any] = [
             "id": id,
             "authorId": user.uid,
@@ -66,41 +72,80 @@ final class ReportService {
         }
         if let photoUrl { fields["photoUrl"] = photoUrl }
 
+        // ✅ Altijd municipalityId zetten als we er één hebben (voor filtering!)
+        if let municipalityId, MunicipalitiesNB.isValid(municipalityId) {
+            fields["municipalityId"] = municipalityId
+        }
+
         // 3) Schrijven
         let store = await db()
-        let ref = store.collection("reports").document(id)
-        try await ref.setData(fields, merge: false)
+        try await store.collection("reports").document(id).setData(fields, merge: false)
 
-        // ✅ punten voor melding plaatsen (unused-result fix)
+        // punten toekennen (fire & forget)
         _ = try? await PointsService.shared.award(.createReport)
 
-        print("✅ [ReportService] Report aangemaakt \(id) (foto: \(photoUrl != nil ? "JA" : "NEE"))")
+        print("✅ [ReportService] Report aangemaakt \(id) (foto: \(photoUrl != nil ? "JA" : "NEE")) – gemeente: \(fields["municipalityId"] as? String ?? "—")")
     }
-}
 
-// MARK: - Realtime listener op alle meldingen
-extension ReportService {
-    /// Luistert live naar alle meldingen (gesorteerd op createdAt desc).
-    /// Roept `onChange` aan met de nieuwste lijst `Report`.
-    /// Let op: verwijder de listener met `.remove()` wanneer je View verdwijnt.
+    // MARK: - Fetch (één document)
+
+    func fetchReportById(_ id: String) async throws -> Report? {
+        let store = await db()
+        let snap = try await store.collection("reports").document(id).getDocument()
+        guard let data = snap.data() else { return nil }
+        return Report.from(id: snap.documentID, data: data)
+    }
+
+    // MARK: - Realtime listeners
+
     func listenToReports(onChange: @escaping ([Report]) -> Void) -> ListenerRegistration {
-        let store = Firestore.firestore()
-
-        return store.collection("reports")
+        Firestore.firestore()
+            .collection("reports")
             .order(by: "createdAt", descending: true)
             .addSnapshotListener { snapshot, error in
                 guard let docs = snapshot?.documents else {
-                    print("⚠️ [ReportService] Live-listener fout:",
-                          error?.localizedDescription ?? "onbekend")
+                    print("⚠️ [ReportService] Live-listener fout:", error?.localizedDescription ?? "onbekend")
                     return
                 }
-
-                // Gebruik jouw eigen mapper i.p.v. `$0.data(as:)`
-                let items: [Report] = docs.compactMap {
-                    Report.from(id: $0.documentID, data: $0.data())
-                }
-
+                let items: [Report] = docs.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
                 onChange(items)
             }
+    }
+
+    /// Luister naar meldingen binnen een gemeente. Als `municipalityId == nil` → alle meldingen.
+    func listenToReports(in municipalityId: String?, onChange: @escaping ([Report]) -> Void) -> ListenerRegistration {
+        var query: Query = Firestore.firestore().collection("reports")
+        if let municipalityId, !municipalityId.isEmpty {
+            query = query.whereField("municipalityId", isEqualTo: municipalityId)
+        }
+        query = query.order(by: "createdAt", descending: true)
+
+        return query.addSnapshotListener { snapshot, error in
+            guard let docs = snapshot?.documents else {
+                print("⚠️ [ReportService] Live-listener fout:", error?.localizedDescription ?? "onbekend")
+                return
+            }
+            let items: [Report] = docs.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
+            onChange(items)
+        }
+    }
+}
+
+// MARK: - Status wijzigen (alleen municipality/moderator/admin via rules)
+extension ReportService {
+    static let allowedStatuses: Set<String> = ["open", "in_progress", "resolved", "need_info"]
+
+    func updateStatus(reportId: String, newStatus: String) async throws {
+        guard Self.allowedStatuses.contains(newStatus) else {
+            throw NSError(domain: "ReportService", code: -20,
+                          userInfo: [NSLocalizedDescriptionKey: "Ongeldige status"])
+        }
+        let store = await db()
+        try await store.collection("reports")
+            .document(reportId)
+            .updateData([
+                "status": newStatus,
+                "updatedAt": FieldValue.serverTimestamp()
+            ])
     }
 }

@@ -8,7 +8,7 @@
 //  OpenAI. (2025). ChatGPT (GPT-5) [Large language model]. OpenAI.
 //
 //  Kaart toont altijd pins; heatmap/density is een visuele filter erboven.
-//  (Één MKMapView via MapWithHeatView voor pins + overlay, dus alles blijft synchroon.)
+//  Kaart filtert ALTIJD op de gekozen gemeente-instelling van de gebruiker.
 //
 
 import SwiftUI
@@ -38,23 +38,23 @@ struct MapScreen: View {
                     return MapWithHeatView.Item(
                         reportId: r.id,
                         coordinate: c,
-                        weight: max(1, r.likes + 1),   // single altijd zichtbaar
-                        category: r.category           // ✅ categorie meegeven voor icon/kleur
+                        weight: max(1, r.likes + 1),   // altijd zichtbaar
+                        category: r.category
                     )
                 },
                 showHeat: showHeatmap,
-                baseRadiusMeters: 260,       // zichtbaar op gemeente-niveau
-                neighborhoodMeters: 320,     // klonteren binnen ~320 m
+                baseRadiusMeters: 260,
+                neighborhoodMeters: 320,
                 initialRegion: defaultRegion()
             ) { tappedId in
-                // Pin/selectie callback → toon details
+                // Klik op pin → open detail
                 if let found = vm.filtered.first(where: { $0.id == tappedId }) {
                     selectedReport = found
                 }
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // Legenda rechtsonder (alleen bij heatmap)
+            // Legenda rechtsonder
             if showHeatmap && showLegend {
                 VStack {
                     Spacer()
@@ -80,7 +80,9 @@ struct MapScreen: View {
 
                         if vm.loading { ProgressView().controlSize(.small) }
 
-                        Button { Task { await vm.loadAll() } } label: {
+                        Button {
+                            vm.restartForMunicipalityChange()
+                        } label: {
                             Image(systemName: "arrow.clockwise")
                         }
                         .foregroundStyle(AppColors.primaryBlue)
@@ -120,8 +122,7 @@ struct MapScreen: View {
                             get: { vm.onlyMine },
                             set: { newVal in
                                 vm.onlyMine = newVal
-                                let uid = Auth.auth().currentUser?.uid
-                                vm.applyFilters(currentUserId: uid)
+                                vm.applyFilters(currentUserId: Auth.auth().currentUser?.uid)
                             })
                         )
                         .toggleStyle(.switch)
@@ -138,7 +139,7 @@ struct MapScreen: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text("Toont \(vm.filtered.count) van \(vm.allReports.count) meldingen")
+                    Text("Toont \(vm.filtered.count) meldingen in je gemeente")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -147,9 +148,12 @@ struct MapScreen: View {
             .padding(.horizontal)
             .padding(.top, 8)
         }
-        .task {
-            await vm.loadAll()
-            vm.applyFilters(currentUserId: Auth.auth().currentUser?.uid)
+        // Start/stop de listener zodra de view zichtbaar is
+        .onAppear { vm.start() }
+        .onDisappear { vm.stop() }
+        // Kaart opnieuw laden bij gemeentewijziging
+        .onReceive(NotificationCenter.default.publisher(for: .municipalityDidChange)) { _ in
+            vm.restartForMunicipalityChange()
         }
         .sheet(item: $selectedReport) { report in
             ReportDetailSheet(report: report)
@@ -195,7 +199,7 @@ struct MapScreen: View {
     }
 }
 
-// MARK: - Chip-component
+// MARK: - FilterChip component
 private struct FilterChip: View {
     let title: String
     var systemImage: String? = nil
