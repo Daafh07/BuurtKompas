@@ -15,11 +15,16 @@ final class ReportsViewModel: ObservableObject {
 
     func start() {
         Task {
-            detach = await ReportService.shared.listenMyReports(onChange: { [weak self] reports in
-                Task { @MainActor in self?.items = reports }
-            }, onError: { [weak self] err in
-                Task { @MainActor in self?.error = err.localizedDescription }
-            })
+            self.detach = await ReportService.shared.listenMyReports(
+                onChange: { [weak self] reports in
+                    guard let self = self else { return }
+                    self.items = reports
+                },
+                onError: { [weak self] (err: Error) in   // ✅ type-annotatie toegevoegd
+                    guard let self = self else { return }
+                    self.error = err.localizedDescription
+                }
+            )
         }
     }
 

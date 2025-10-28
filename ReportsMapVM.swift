@@ -38,7 +38,6 @@ final class ReportsMapVM: ObservableObject {
 
         // Profiel (met gemeente) ophalen op achtergrond, daarna listener aan op de MainActor
         Task { [weak self] in
-            // self is niet MainActor hier —> daarom zwak + terug naar MainActor voor state
             let (uid, muni): (String?, String?)
             if let u = Auth.auth().currentUser?.uid,
                let profile = try? await UserService.shared.load(uid: u) {
@@ -92,25 +91,14 @@ final class ReportsMapVM: ObservableObject {
         // Bewaar huidige gemeente-id
         self.municipalityId = muni
 
-        // Eventuele oude listener weghalen (veiligheid)
+        // Eventuele oude listener verwijderen
         listener?.remove()
         listener = nil
 
-        // Nieuwe query: filter op 'municipalityId' (als gevuld), sorteer op createdAt desc
-        var query: Query = Firestore.firestore().collection("reports")
-        if let m = muni, !m.isEmpty {
-            query = query.whereField("municipalityId", isEqualTo: m)
-        }
-        query = query.order(by: "createdAt", descending: true)
-
-        listener = query.addSnapshotListener { [weak self] snap, err in
-            guard let self = self else { return }
-            guard let docs = snap?.documents else {
-                print("⚠️ [ReportsMapVM] Listen error:", err?.localizedDescription ?? "onbekend")
-                return
-            }
-            let items: [Report] = docs.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
+        // ✅ Gebruik de service-listener (inclusief metadata changes + fallback sortering)
+        listener = ReportService.shared.listenToReports(in: muni) { [weak self] items in
             Task { @MainActor in
+                guard let self = self else { return }
                 self.allReports = items
                 self.applyFilters(currentUserId: Auth.auth().currentUser?.uid)
             }

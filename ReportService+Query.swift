@@ -1,51 +1,40 @@
 //
 //  ReportService+Query.swift
 //
-//  Bronvermelding (APA 7):
-//  Google. (2025). *Cloud Firestore for iOS – Query data* [Developer documentation].
-//      Firebase. https://firebase.google.com/docs/firestore/query-data/queries
-//  Apple Inc. (2025). *Swift Concurrency Guide* [Developer documentation].
-//      Apple Developer. https://developer.apple.com/documentation/swift/concurrency
-//  OpenAI. (2025). *ChatGPT (GPT-5)* [Large language model]. OpenAI. https://chat.openai.com/
-//  --
-//  Query-hulpen: eigen meldingen + realtime listener.
 
 import Foundation
 import FirebaseFirestore
-import FirebaseAuth
 
 extension ReportService {
+    /// Luister naar meldingen binnen een gemeente. Als `municipalityId == nil` → alle meldingen.
+    /// Gebruikt includeMetadataChanges + fallback sort op createdAtClient voor snelle lokale weergave.
+    func listenToReports(
+        in municipalityId: String?,
+        onChange: @escaping ([Report]) -> Void
+    ) -> ListenerRegistration {
+        var query: Query = Firestore.firestore().collection("reports")
+        if let municipalityId, !municipalityId.isEmpty {
+            query = query.whereField("municipalityId", isEqualTo: municipalityId)
+        }
+        query = query.order(by: "createdAt", descending: true)
 
-    // Eénmalig ophalen (handig voor refresh)
-    func fetchMyReports(limit: Int = 50) async throws -> [Report] {
-        guard let uid = Auth.auth().currentUser?.uid else { return [] }
-        let store = await self.db()   // <-- andere naam, en expliciet self.
-        let q = store.collection("reports")
-            .whereField("authorId", isEqualTo: uid)
-            .order(by: "createdAt", descending: true)
-            .limit(to: limit)
+        return query.addSnapshotListener(includeMetadataChanges: true) { snapshot, error in
+            guard let docs = snapshot?.documents else {
+                print("⚠️ [ReportService] Live-listener fout:", error?.localizedDescription ?? "onbekend")
+                onChange([])
+                return
+            }
 
-        let snap = try await q.getDocuments()
-        return snap.documents.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
-    }
+            var items: [Report] = docs.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
 
-    // Realtime luisteren; levert een detach-closure op om te stoppen
-    func listenMyReports(
-        onChange: @escaping ([Report]) -> Void,
-        onError: @escaping (Error) -> Void
-    ) async -> () -> Void {
-        guard let uid = Auth.auth().currentUser?.uid else { return {} }
-        let store = await self.db()   // <-- idem
-        let q = store.collection("reports")
-            .whereField("authorId", isEqualTo: uid)
-            .order(by: "createdAt", descending: true)
+            // Fallback sortering terwijl server 'createdAt' nog nil kan zijn
+            items.sort { a, b in
+                let da = a.createdAt ?? a.createdAtClient ?? .distantPast
+                let db = b.createdAt ?? b.createdAtClient ?? .distantPast
+                return da > db
+            }
 
-        let listener = q.addSnapshotListener { snap, err in
-            if let err { onError(err); return }
-            guard let snap else { onChange([]); return }
-            let items = snap.documents.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
             onChange(items)
         }
-        return { listener.remove() }
     }
 }

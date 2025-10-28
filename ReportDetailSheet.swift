@@ -1,19 +1,9 @@
-//
-//  ReportDetailSheet.swift
-//
-//  Bronvermelding (APA 7):
-//  Apple Inc. (2025). SwiftUI Sheets & Presentation [Developer documentation]. Apple Developer.
-//  Apple Inc. (2025). MapKit – Open in Maps [Developer documentation]. Apple Developer.
-//  Google. (2025). Cloud Firestore – Update & Query data [Developer documentation]. Firebase.
-//  OpenAI. (2025). ChatGPT (GPT-5) [Large language model]. OpenAI.
-//
-//  Detailweergave voor een melding met acties + reacties + (moderator) status-wijziging.
-//
 import SwiftUI
 import MapKit
 import FirebaseAuth
 import FirebaseFirestore
 import Combine
+import CoreLocation   // ⬅️ voeg ook bovenaan toe naast MapKit!
 
 struct ReportDetailSheet: View, Identifiable {
     var id: String { report.id }
@@ -57,7 +47,7 @@ struct ReportDetailSheet: View, Identifiable {
                 Text(error).foregroundStyle(.red).font(.footnote)
             }
 
-            // Melding kaart + statusregel (moderators)
+            // Info + status
             GlassCard {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top) {
@@ -72,7 +62,6 @@ struct ReportDetailSheet: View, Identifiable {
                         Spacer()
                     }
 
-                    // Moderation status control (alleen voor gemeente/moderator/admin)
                     if canModerate {
                         HStack(spacing: 8) {
                             Text("Status wijzigen:")
@@ -148,7 +137,8 @@ struct ReportDetailSheet: View, Identifiable {
 
                     Spacer()
 
-                    if isOwner {
+                    // eigenaar of moderator: menu met delete
+                    if isOwner || canModerate {
                         Menu {
                             Button(role: .destructive) { Task { await deleteAction() } } label: {
                                 Label("Verwijderen", systemImage: "trash")
@@ -159,7 +149,7 @@ struct ReportDetailSheet: View, Identifiable {
                 }
             }
 
-            // Reacties (+ gemeentelijke pinning via CommentsVM)
+            // Reacties
             GlassCard {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -230,15 +220,12 @@ struct ReportDetailSheet: View, Identifiable {
                 if report.photoUrl == nil { isLoading = false }
             }
         }
-        .onDisappear {
-            commentsVM.stopListening()
-        }
+        .onDisappear { commentsVM.stopListening() }
         .appScaffold()
         .presentationDetents([.medium, .large])
     }
 
-    // MARK: Status helpers (UI)
-
+    // MARK: Status helpers
     private func statusLabel(_ s: String) -> String {
         switch s {
         case "resolved": return "Opgelost"
@@ -247,7 +234,6 @@ struct ReportDetailSheet: View, Identifiable {
         default: return "Open"
         }
     }
-
     private func statusIcon(_ s: String) -> String {
         switch s {
         case "resolved": return "checkmark.seal.fill"
@@ -281,32 +267,27 @@ struct ReportDetailSheet: View, Identifiable {
         }
     }
 
-    // MARK: Like logic
-
+    // MARK: Likes
     private func loadHasLiked() async {
-        do {
-            hasLiked = try await ReportService.shared.hasUserLiked(reportId: report.id)
-        } catch {
-            self.error = error.localizedDescription
-        }
+        do { hasLiked = try await ReportService.shared.hasUserLiked(reportId: report.id) }
+        catch { self.error = error.localizedDescription }
     }
 
     private func toggleLike() async {
         guard !likeBusy else { return }
         likeBusy = true
         do {
-            let newStatus = try await ReportService.shared.toggleLike(reportId: report.id, currentLiked: hasLiked)
-            if newStatus && !hasLiked { likeCount += 1 }
-            if !newStatus && hasLiked { likeCount = max(0, likeCount - 1) }
-            hasLiked = newStatus
+            let newVal = try await ReportService.shared.toggleLike(reportId: report.id, currentLiked: hasLiked)
+            if newVal && !hasLiked { likeCount += 1 }
+            if !newVal && hasLiked { likeCount = max(0, likeCount - 1) }
+            hasLiked = newVal
         } catch {
             self.error = error.localizedDescription
         }
         likeBusy = false
     }
 
-    // MARK: Overige acties
-
+    // MARK: Delete
     private func deleteAction() async {
         guard !isDeleting else { return }
         isDeleting = true
@@ -319,18 +300,29 @@ struct ReportDetailSheet: View, Identifiable {
         isDeleting = false
     }
 
+    // iOS 26 deprecation fix
+    
+
     private func openInMaps(coord: CLLocationCoordinate2D, title: String) {
-        // MKPlacemark is deprecated warning op iOS 26+, maar blijft werken.
-        // Wil je 26-only API, dan kunnen we een #available pad maken.
-        let placemark = MKPlacemark(coordinate: coord)
-        let item = MKMapItem(placemark: placemark)
-        item.name = title
-        let opts = [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking]
-        item.openInMaps(launchOptions: opts)
+        // ✅ Compatibel met iOS 26 en ouder
+        if #available(iOS 26.0, *) {
+            // Apple’s nieuwe API kan ook nog altijd met MKPlacemark
+            let placemark = MKPlacemark(coordinate: coord)
+            let item = MKMapItem(placemark: placemark)
+            item.name = title
+            item.openInMaps()
+        } else {
+            // Oudere fallback met looprichting-opties
+            let placemark = MKPlacemark(coordinate: coord)
+            let item = MKMapItem(placemark: placemark)
+            item.name = title
+            let opts = [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking]
+            item.openInMaps(launchOptions: opts)
+        }
     }
 }
 
-// MARK: Reacties UI
+// MARK: Reacties UI + VM
 
 private struct CommentRow: View {
     let viewModel: ReportComment
@@ -346,7 +338,6 @@ private struct CommentRow: View {
                 HStack(spacing: 6) {
                     Text(viewModel.isMunicipal ? "Gemeente" : (viewModel.authorId == currentUserId ? "Jij" : "Gebruiker"))
                         .font(.subheadline.weight(.semibold))
-
                     if viewModel.isMunicipal {
                         Text("Gemeente")
                             .font(.caption2.weight(.bold))
@@ -369,8 +360,6 @@ private struct CommentRow: View {
     }
 }
 
-// MARK: Reacties model
-
 private struct ReportComment: Identifiable {
     let id: String
     let authorId: String
@@ -381,17 +370,20 @@ private struct ReportComment: Identifiable {
     static func from(id: String, data: [String: Any]) -> ReportComment? {
         guard let authorId = data["authorId"] as? String,
               let text = data["text"] as? String else { return nil }
+
+        // ⬇️ server timestamp + client fallback
+        let createdServer = (data["createdAt"] as? Timestamp)?.dateValue()
+        let createdClient = (data["createdAtClient"] as? Timestamp)?.dateValue()
+
         return ReportComment(
             id: id,
             authorId: authorId,
             text: text,
             isMunicipal: (data["isMunicipal"] as? Bool) ?? false,
-            createdAt: (data["createdAt"] as? Timestamp)?.dateValue()
+            createdAt: createdServer ?? createdClient
         )
     }
 }
-
-// MARK: Reacties VM (incl. rolbepaling + gemeente toggle)
 
 private final class CommentsVM: ObservableObject {
     @Published var comments: [ReportComment] = []
@@ -399,7 +391,6 @@ private final class CommentsVM: ObservableObject {
     @Published var loading = false
     @Published var sending = false
 
-    // Rol & UI
     @Published var canPostMunicipal = false
     @Published var postAsMunicipal = false
 
@@ -428,19 +419,36 @@ private final class CommentsVM: ObservableObject {
         guard listener == nil else { return }
         loading = true
 
-        // Gemeente bovenaan (isMunicipal desc), daarna oudste eerst
         let ref = Firestore.firestore()
             .collection("reports").document(reportId)
             .collection("comments")
-            .order(by: "isMunicipal", descending: true)
+            // ⬇️ Eenvoudige sortering (geen composite index nodig)
             .order(by: "createdAt", descending: false)
 
-        listener = ref.addSnapshotListener { [weak self] snap, _ in
+        listener = ref.addSnapshotListener(includeMetadataChanges: true) { [weak self] snap, err in
             guard let self = self else { return }
-            self.loading = false
-            if let docs = snap?.documents {
-                self.comments = docs.compactMap { ReportComment.from(id: $0.documentID, data: $0.data()) }
+
+            if let err = err {
+                print("⚠️ [CommentsVM] Listen error:", err.localizedDescription)
+                self.loading = false
+                self.comments = []
+                return
             }
+
+            self.loading = false
+            var items = (snap?.documents ?? []).compactMap {
+                ReportComment.from(id: $0.documentID, data: $0.data())
+            }
+
+            // ⬇️ Client-side pinning van gemeentelijke reacties
+            items.sort { a, b in
+                if a.isMunicipal != b.isMunicipal { return a.isMunicipal && !b.isMunicipal }
+                let da = a.createdAt ?? .distantPast
+                let db = b.createdAt ?? .distantPast
+                return da < db
+            }
+
+            self.comments = items
         }
     }
 
@@ -451,7 +459,7 @@ private final class CommentsVM: ObservableObject {
 
     @MainActor
     func send() async {
-        let text = newText.trimmed()
+        let text = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         guard let uid = Auth.auth().currentUser?.uid else { return }
         sending = true
@@ -462,17 +470,16 @@ private final class CommentsVM: ObservableObject {
             let reportRef = db.collection("reports").document(reportId)
             let willBeMunicipal = canPostMunicipal && postAsMunicipal
 
-            // 1) Voeg comment toe
             let commentRef = reportRef.collection("comments").document()
             try await commentRef.setData([
                 "id": commentRef.documentID,
                 "authorId": uid,
                 "text": text,
                 "isMunicipal": willBeMunicipal,
-                "createdAt": FieldValue.serverTimestamp()
+                "createdAt": FieldValue.serverTimestamp(),
+                "createdAtClient": Timestamp(date: Date()) // ⬅️ fallback zodat nieuwe reacties direct goed sorteren
             ])
 
-            // 2) Teller + updatedAt
             try await reportRef.updateData([
                 "commentsCount": FieldValue.increment(Int64(1)),
                 "updatedAt": FieldValue.serverTimestamp()
@@ -485,8 +492,7 @@ private final class CommentsVM: ObservableObject {
     }
 }
 
-// MARK: Kleine badges
-
+// Kleine badges
 private struct CategoryPill: View {
     let category: ReportCategory
     var body: some View {
@@ -543,8 +549,6 @@ private struct StatusBadge: View {
         }
     }
 }
-
-// MARK: Helpers
 
 private extension String {
     func trimmed() -> String { trimmingCharacters(in: .whitespacesAndNewlines) }

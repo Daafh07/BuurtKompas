@@ -24,10 +24,11 @@ final class ReportService {
     ///   - image: Optionele UIImage.
     ///   - overrideMunicipalityId: (Optioneel) gemeente-id die dit report MOET krijgen.
     ///     Als nil, dan pakken we de `municipalityId` van de ingelogde gebruiker (indien aanwezig).
-    func createReport(draft: ReportDraft,
-                      image: UIImage?,
-                      overrideMunicipalityId: String? = nil) async throws
-    {
+    func createReport(
+        draft: ReportDraft,
+        image: UIImage?,
+        overrideMunicipalityId: String? = nil
+    ) async throws {
         guard let user = Auth.auth().currentUser else {
             throw NSError(domain: "ReportService", code: -10,
                           userInfo: [NSLocalizedDescriptionKey: "Geen ingelogde gebruiker"])
@@ -46,13 +47,12 @@ final class ReportService {
         if let image {
             do {
                 photoUrl = try await PhotoStorage.shared.uploadReportImage(image, reportId: id)
-                print("✅ [ReportService] Foto geüpload: \(photoUrl ?? "-")")
             } catch {
                 print("⚠️ [ReportService] Foto upload faalde: \(error.localizedDescription)")
             }
         }
 
-        // 2) Firestore velden
+        // 2) Firestore velden (incl. client timestamp)
         var fields: [String: Any] = [
             "id": id,
             "authorId": user.uid,
@@ -64,6 +64,7 @@ final class ReportService {
             "likes": 0,
             "commentsCount": 0,
             "createdAt": FieldValue.serverTimestamp(),
+            "createdAtClient": Timestamp(date: Date()),
             "updatedAt": FieldValue.serverTimestamp()
         ]
 
@@ -72,7 +73,7 @@ final class ReportService {
         }
         if let photoUrl { fields["photoUrl"] = photoUrl }
 
-        // ✅ Altijd municipalityId zetten als we er één hebben (voor filtering!)
+        // Altijd municipalityId zetten als we er één hebben (voor filtering!)
         if let municipalityId, MunicipalitiesNB.isValid(municipalityId) {
             fields["municipalityId"] = municipalityId
         }
@@ -83,8 +84,6 @@ final class ReportService {
 
         // punten toekennen (fire & forget)
         _ = try? await PointsService.shared.award(.createReport)
-
-        print("✅ [ReportService] Report aangemaakt \(id) (foto: \(photoUrl != nil ? "JA" : "NEE")) – gemeente: \(fields["municipalityId"] as? String ?? "—")")
     }
 
     // MARK: - Fetch (één document)
@@ -94,58 +93,5 @@ final class ReportService {
         let snap = try await store.collection("reports").document(id).getDocument()
         guard let data = snap.data() else { return nil }
         return Report.from(id: snap.documentID, data: data)
-    }
-
-    // MARK: - Realtime listeners
-
-    func listenToReports(onChange: @escaping ([Report]) -> Void) -> ListenerRegistration {
-        Firestore.firestore()
-            .collection("reports")
-            .order(by: "createdAt", descending: true)
-            .addSnapshotListener { snapshot, error in
-                guard let docs = snapshot?.documents else {
-                    print("⚠️ [ReportService] Live-listener fout:", error?.localizedDescription ?? "onbekend")
-                    return
-                }
-                let items: [Report] = docs.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
-                onChange(items)
-            }
-    }
-
-    /// Luister naar meldingen binnen een gemeente. Als `municipalityId == nil` → alle meldingen.
-    func listenToReports(in municipalityId: String?, onChange: @escaping ([Report]) -> Void) -> ListenerRegistration {
-        var query: Query = Firestore.firestore().collection("reports")
-        if let municipalityId, !municipalityId.isEmpty {
-            query = query.whereField("municipalityId", isEqualTo: municipalityId)
-        }
-        query = query.order(by: "createdAt", descending: true)
-
-        return query.addSnapshotListener { snapshot, error in
-            guard let docs = snapshot?.documents else {
-                print("⚠️ [ReportService] Live-listener fout:", error?.localizedDescription ?? "onbekend")
-                return
-            }
-            let items: [Report] = docs.compactMap { Report.from(id: $0.documentID, data: $0.data()) }
-            onChange(items)
-        }
-    }
-}
-
-// MARK: - Status wijzigen (alleen municipality/moderator/admin via rules)
-extension ReportService {
-    static let allowedStatuses: Set<String> = ["open", "in_progress", "resolved", "need_info"]
-
-    func updateStatus(reportId: String, newStatus: String) async throws {
-        guard Self.allowedStatuses.contains(newStatus) else {
-            throw NSError(domain: "ReportService", code: -20,
-                          userInfo: [NSLocalizedDescriptionKey: "Ongeldige status"])
-        }
-        let store = await db()
-        try await store.collection("reports")
-            .document(reportId)
-            .updateData([
-                "status": newStatus,
-                "updatedAt": FieldValue.serverTimestamp()
-            ])
     }
 }

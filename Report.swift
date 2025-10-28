@@ -18,10 +18,11 @@ struct Report: Identifiable {
     let likes: Int
     let commentsCount: Int
     let photoUrl: String?
-    let createdAt: Date?
+    let createdAt: Date?          // server timestamp
+    let createdAtClient: Date?    // ✅ nieuw: client timestamp voor directe weergave
     let updatedAt: Date?
     let coordinate: CLLocationCoordinate2D?
-    let municipalityId: String?   // ✅ NIEUW
+    let municipalityId: String?   // gekoppelde gemeente
 }
 
 extension Report {
@@ -41,9 +42,10 @@ extension Report {
             commentsCount: data["commentsCount"] as? Int ?? 0,
             photoUrl: data["photoUrl"] as? String,
             createdAt: (data["createdAt"] as? Timestamp)?.dateValue(),
+            createdAtClient: (data["createdAtClient"] as? Timestamp)?.dateValue(), // ✅ mapping
             updatedAt: (data["updatedAt"] as? Timestamp)?.dateValue(),
             coordinate: coord,
-            municipalityId: data["municipalityId"] as? String // ✅ mapping
+            municipalityId: data["municipalityId"] as? String
         )
     }
 }
